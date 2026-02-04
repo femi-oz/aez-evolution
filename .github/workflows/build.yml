@@ -24,32 +24,45 @@ jobs:
           cache: true
           
       - name: Cache Solana
+        id: cache-solana
         uses: actions/cache@v4
         with:
           path: |
             ~/.local/share/solana
             ~/.cache/solana
-          key: solana-${{ env.SOLANA_VERSION }}
+          key: solana-${{ env.SOLANA_VERSION }}-${{ runner.os }}
           
       - name: Install Solana
+        if: steps.cache-solana.outputs.cache-hit != 'true'
         run: |
-          sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+          # Try multiple mirrors
+          for i in 1 2 3; do
+            sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)" && break
+            echo "Attempt $i failed, retrying..."
+            sleep 5
+          done
+          
+      - name: Add Solana to PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+          
+      - name: Verify Solana
+        run: |
           export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
           solana --version
           
       - name: Cache Anchor
+        id: cache-anchor
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/anchor
-          key: anchor-${{ env.ANCHOR_VERSION }}
+          key: anchor-${{ env.ANCHOR_VERSION }}-${{ runner.os }}
           
       - name: Install Anchor
-        run: |
-          if ! command -v anchor &> /dev/null; then
-            cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} anchor-cli --locked
-          fi
-          anchor --version
+        if: steps.cache-anchor.outputs.cache-hit != 'true'
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} anchor-cli --locked
+          
+      - name: Verify Anchor
+        run: anchor --version
           
       - name: Build Program
         run: |
@@ -75,10 +88,21 @@ jobs:
           name: program-so
           path: target/deploy/
           
+      - name: Cache Solana
+        id: cache-solana-deploy
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/solana
+            ~/.cache/solana
+          key: solana-${{ env.SOLANA_VERSION }}-${{ runner.os }}
+          
       - name: Install Solana
-        run: |
-          sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+        if: steps.cache-solana-deploy.outputs.cache-hit != 'true'
+        run: sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)"
+        
+      - name: Add Solana to PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
           
       - name: Setup Keypair
         run: |
@@ -87,5 +111,4 @@ jobs:
           solana config set --keypair deployer.json
           
       - name: Deploy to Devnet
-        run: |
-          solana program deploy target/deploy/aez_evolution.so
+        run: solana program deploy target/deploy/aez_evolution.so
