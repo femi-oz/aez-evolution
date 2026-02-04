@@ -23,32 +23,18 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           cache: true
           
-      - name: Cache Solana
-        id: cache-solana
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.local/share/solana
-            ~/.cache/solana
-          key: solana-${{ env.SOLANA_VERSION }}-${{ runner.os }}
-          
       - name: Install Solana
-        if: steps.cache-solana.outputs.cache-hit != 'true'
         run: |
-          # Try multiple mirrors
-          for i in 1 2 3; do
-            sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)" && break
-            echo "Attempt $i failed, retrying..."
-            sleep 5
-          done
-          
-      - name: Add Solana to PATH
-        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+          # Download and install Solana
+          curl -sSfL "https://release.solana.com/v${{ env.SOLANA_VERSION }}/solana-release-x86_64-unknown-linux-gnu.tar.bz2" -o solana.tar.bz2
+          mkdir -p ~/.local/share/solana/install/active_release
+          tar -xjf solana.tar.bz2 -C ~/.local/share/solana/install/active_release --strip-components=1
+          rm solana.tar.bz2
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
           
       - name: Verify Solana
         run: |
-          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
-          solana --version
+          ~/.local/share/solana/install/active_release/bin/solana --version
           
       - name: Cache Anchor
         id: cache-anchor
@@ -62,11 +48,13 @@ jobs:
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} anchor-cli --locked
           
       - name: Verify Anchor
-        run: anchor --version
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          anchor --version
           
       - name: Build Program
         run: |
-          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
           anchor build
         
       - name: Upload Artifacts
@@ -74,7 +62,7 @@ jobs:
         with:
           name: program-so
           path: target/deploy/*.so
-          
+
   deploy-devnet:
     needs: build
     runs-on: ubuntu-latest
@@ -88,27 +76,19 @@ jobs:
           name: program-so
           path: target/deploy/
           
-      - name: Cache Solana
-        id: cache-solana-deploy
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.local/share/solana
-            ~/.cache/solana
-          key: solana-${{ env.SOLANA_VERSION }}-${{ runner.os }}
-          
       - name: Install Solana
-        if: steps.cache-solana-deploy.outputs.cache-hit != 'true'
-        run: sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)"
-        
-      - name: Add Solana to PATH
-        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+        run: |
+          curl -sSfL "https://release.solana.com/v${{ env.SOLANA_VERSION }}/solana-release-x86_64-unknown-linux-gnu.tar.bz2" -o solana.tar.bz2
+          mkdir -p ~/.local/share/solana/install/active_release
+          tar -xjf solana.tar.bz2 -C ~/.local/share/solana/install/active_release --strip-components=1
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
           
       - name: Setup Keypair
         run: |
           echo "${{ secrets.DEPLOYER_KEYPAIR }}" > deployer.json
-          solana config set --url devnet
-          solana config set --keypair deployer.json
+          ~/.local/share/solana/install/active_release/bin/solana config set --url devnet
+          ~/.local/share/solana/install/active_release/bin/solana config set --keypair deployer.json
           
       - name: Deploy to Devnet
-        run: solana program deploy target/deploy/aez_evolution.so
+        run: |
+          ~/.local/share/solana/install/active_release/bin/solana program deploy target/deploy/aez_evolution.so
