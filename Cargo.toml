@@ -4,6 +4,10 @@ members = [
 ]
 resolver = "2"
 
+# Pin crates that require edition2024 to older versions
+[patch.crates-io]
+constant_time_eq = { git = "https://github.com/cesarb/constant_time_eq", tag = "v0.3.0" }
+
 [profile.release]
 overflow-checks = true
 lto = "fat"
