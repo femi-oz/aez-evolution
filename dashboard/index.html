@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧬 AEZ Evolution</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(90deg, #00f5d4, #7b2cbf);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #888;
+            font-size: 1.1rem;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .card h2 {
+            font-size: 1.2rem;
+            color: #00f5d4;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+        
+        .stat {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 16px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #fff;
+        }
+        
+        .stat-label {
+            font-size: 0.85rem;
+            color: #888;
+            margin-top: 4px;
+        }
+        
+        .strategies {
+            margin-top: 16px;
+        }
+        
+        .strategy-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+        
+        .strategy-name {
+            font-weight: 600;
+        }
+        
+        .strategy-bar {
+            flex: 1;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            margin: 0 16px;
+            overflow: hidden;
+        }
+        
+        .strategy-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        
+        .cooperator { background: #4ade80; }
+        .defector { background: #f87171; }
+        .titfortat { background: #60a5fa; }
+        .grudger { background: #fbbf24; }
+        .random { background: #a78bfa; }
+        
+        .strategy-count {
+            font-weight: bold;
+            min-width: 40px;
+            text-align: right;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #00f5d4, #00bbf9);
+            border: none;
+            color: #1a1a2e;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, opacity 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        button.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+        }
+        
+        .leaderboard {
+            margin-top: 16px;
+        }
+        
+        .leader-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            margin-bottom: 6px;
+        }
+        
+        .leader-rank {
+            font-size: 1.2rem;
+            width: 30px;
+        }
+        
+        .leader-info {
+            flex: 1;
+        }
+        
+        .leader-name {
+            font-weight: 600;
+        }
+        
+        .leader-strategy {
+            font-size: 0.8rem;
+            color: #888;
+        }
+        
+        .leader-fitness {
+            font-weight: bold;
+            color: #00f5d4;
+        }
+        
+        .events {
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+        
+        .event {
+            padding: 6px 10px;
+            border-left: 3px solid #00f5d4;
+            margin-bottom: 4px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+        
+        .event.selection {
+            border-color: #fbbf24;
+        }
+        
+        #status {
+            text-align: center;
+            padding: 20px;
+            color: #888;
+        }
+        
+        .running {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🧬 AEZ Evolution</h1>
+        <p>Autonomous agents evolving through game theory</p>
+    </div>
+    
+    <div id="status">Connecting to API...</div>
+    
+    <div class="grid" id="main" style="display: none;">
+        <!-- Stats -->
+        <div class="card">
+            <h2>📊 Simulation</h2>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value" id="round">0</div>
+                    <div class="stat-label">Round</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="alive">0</div>
+                    <div class="stat-label">Alive</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="total">0</div>
+                    <div class="stat-label">Total</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="events">0</div>
+                    <div class="stat-label">Events</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Controls -->
+        <div class="card">
+            <h2>🎮 Controls</h2>
+            <div class="controls">
+                <button onclick="createSim()">Create New</button>
+                <button onclick="runRound()">Run Round</button>
+                <button onclick="runSelection()">Selection</button>
+                <button onclick="runFull()">Run 100</button>
+                <button class="secondary" onclick="stopSim()">Stop</button>
+            </div>
+        </div>
+        
+        <!-- Strategy Distribution -->
+        <div class="card">
+            <h2>🧬 Strategy Distribution</h2>
+            <div class="strategies" id="strategies"></div>
+        </div>
+        
+        <!-- Leaderboard -->
+        <div class="card">
+            <h2>🏆 Leaderboard</h2>
+            <div class="leaderboard" id="leaderboard"></div>
+        </div>
+        
+        <!-- Events -->
+        <div class="card">
+            <h2>📜 Events</h2>
+            <div class="events" id="eventsLog"></div>
+        </div>
+    </div>
+    
+    <script>
+        const API = 'http://localhost:8000';
+        
+        async function fetchStatus() {
+            try {
+                const res = await fetch(`${API}/simulation/status`);
+                if (!res.ok) throw new Error('No simulation');
+                return await res.json();
+            } catch (e) {
+                return null;
+            }
+        }
+        
+        async function fetchLeaderboard() {
+            const res = await fetch(`${API}/leaderboard?limit=5`);
+            return await res.json();
+        }
+        
+        async function createSim() {
+            await fetch(`${API}/simulation/create`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({})
+            });
+            update();
+        }
+        
+        async function runRound() {
+            await fetch(`${API}/simulation/round`, {method: 'POST'});
+            update();
+        }
+        
+        async function runSelection() {
+            await fetch(`${API}/simulation/selection`, {method: 'POST'});
+            update();
+        }
+        
+        async function runFull() {
+            await fetch(`${API}/simulation/run`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({rounds: 100, selection_interval: 20})
+            });
+        }
+        
+        async function stopSim() {
+            await fetch(`${API}/simulation/stop`, {method: 'POST'});
+        }
+        
+        function getStrategyClass(name) {
+            return name.toLowerCase().replace(/[^a-z]/g, '');
+        }
+        
+        async function update() {
+            const status = await fetchStatus();
+            
+            if (!status) {
+                document.getElementById('status').style.display = 'block';
+                document.getElementById('status').textContent = 'No simulation. Click "Create New" to start.';
+                document.getElementById('main').style.display = 'none';
+                return;
+            }
+            
+            document.getElementById('status').style.display = 'none';
+            document.getElementById('main').style.display = 'grid';
+            
+            // Update stats
+            document.getElementById('round').textContent = status.round_number;
+            document.getElementById('alive').textContent = status.alive_agents;
+            document.getElementById('total').textContent = status.total_agents;
+            document.getElementById('events').textContent = status.events_count;
+            
+            if (status.running) {
+                document.getElementById('round').classList.add('running');
+            } else {
+                document.getElementById('round').classList.remove('running');
+            }
+            
+            // Update strategies
+            const maxCount = Math.max(...status.strategies.map(s => s.count), 1);
+            document.getElementById('strategies').innerHTML = status.strategies.map(s => `
+                <div class="strategy-row">
+                    <span class="strategy-name">${s.name}</span>
+                    <div class="strategy-bar">
+                        <div class="strategy-bar-fill ${getStrategyClass(s.name)}" 
+                             style="width: ${(s.count / maxCount) * 100}%"></div>
+                    </div>
+                    <span class="strategy-count">${s.count}</span>
+                </div>
+            `).join('');
+            
+            // Update leaderboard
+            try {
+                const lb = await fetchLeaderboard();
+                document.getElementById('leaderboard').innerHTML = lb.leaderboard.map(a => `
+                    <div class="leader-row">
+                        <span class="leader-rank">${['🥇','🥈','🥉','4','5'][a.rank-1]}</span>
+                        <div class="leader-info">
+                            <div class="leader-name">${a.id}</div>
+                            <div class="leader-strategy">${a.strategy}</div>
+                        </div>
+                        <span class="leader-fitness">${a.fitness}</span>
+                    </div>
+                `).join('');
+            } catch (e) {}
+        }
+        
+        // Poll every second
+        setInterval(update, 1000);
+        update();
+    </script>
+</body>
+</html>
