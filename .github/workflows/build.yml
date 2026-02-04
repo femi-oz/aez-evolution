@@ -9,7 +9,7 @@ on:
 env:
   SOLANA_VERSION: 1.18.26
   ANCHOR_VERSION: 0.31.0
-  RUST_VERSION: nightly
+  RUST_VERSION: 1.85.0
 
 jobs:
   build:
@@ -55,8 +55,6 @@ jobs:
       - name: Build Program
         run: |
           export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
-          # Remove any lockfile that might have wrong version format
-          rm -f Cargo.lock
           anchor build
         
       - name: Upload Artifacts
