@@ -9,7 +9,7 @@ on:
 env:
   SOLANA_VERSION: 1.18.26
   ANCHOR_VERSION: 0.31.0
-  RUST_VERSION: 1.85.0
+  RUST_VERSION: 1.79.0
 
 jobs:
   build:
@@ -51,6 +51,12 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           anchor --version
+          
+      - name: Update dependencies
+        run: |
+          # Regenerate Cargo.lock with compatible versions
+          rm -f Cargo.lock
+          cargo update
           
       - name: Build Program
         run: |

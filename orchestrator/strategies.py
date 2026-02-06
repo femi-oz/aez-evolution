@@ -1,16 +1,13 @@
 """
-AEZ Evolution - Agent Strategies
+AEZ Evolution Strategies
 
-Each strategy decides: Cooperate or Defect?
+Each strategy decides: Cooperate or Defect based on history
 """
 
-from abc import ABC, abstractmethod
 from enum import Enum
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional
 import random
-import hashlib
-import os
 
 
 class Action(Enum):
@@ -19,186 +16,152 @@ class Action(Enum):
 
 
 @dataclass
-class InteractionHistory:
-    """History of interactions between two agents"""
-    agent_id: str
-    opponent_id: str
-    my_actions: list[Action]
-    opponent_actions: list[Action]
+class StrategyState:
+    """Tracks per-opponent history for stateful strategies"""
+    opponent_actions: Dict[str, List[Action]] = field(default_factory=dict)
+    betrayed_by: set = field(default_factory=set)
     
-    def last_opponent_action(self) -> Optional[Action]:
-        return self.opponent_actions[-1] if self.opponent_actions else None
+    def record_action(self, opponent: str, action: Action):
+        if opponent not in self.opponent_actions:
+            self.opponent_actions[opponent] = []
+        self.opponent_actions[opponent].append(action)
+        if action == Action.DEFECT:
+            self.betrayed_by.add(opponent)
     
-    def opponent_ever_defected(self) -> bool:
-        return Action.DEFECT in self.opponent_actions
+    def last_action(self, opponent: str) -> Optional[Action]:
+        if opponent in self.opponent_actions and self.opponent_actions[opponent]:
+            return self.opponent_actions[opponent][-1]
+        return None
+    
+    def was_betrayed_by(self, opponent: str) -> bool:
+        return opponent in self.betrayed_by
 
 
-class Strategy(ABC):
-    """Base strategy interface"""
+class Strategy:
+    """Base strategy class"""
+    name: str = "Base"
     
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        pass
-    
-    @abstractmethod
-    def decide(self, history: Optional[InteractionHistory]) -> Action:
-        """Decide whether to cooperate or defect"""
-        pass
-    
-    def commit(self, action: Action) -> tuple[bytes, bytes]:
-        """Create commit hash for action (for commit-reveal scheme)"""
-        nonce = os.urandom(32)
-        data = bytes([action.value]) + nonce
-        commit_hash = hashlib.sha256(data).digest()
-        return commit_hash, nonce
+    def decide(self, opponent: str, state: StrategyState) -> Action:
+        raise NotImplementedError
 
 
 class Cooperator(Strategy):
-    """Always cooperate - the naive optimist"""
+    """Always cooperates. Trusting and naive."""
+    name = "Cooperator"
     
-    @property
-    def name(self) -> str:
-        return "Cooperator"
-    
-    def decide(self, history: Optional[InteractionHistory]) -> Action:
+    def decide(self, opponent: str, state: StrategyState) -> Action:
         return Action.COOPERATE
 
 
 class Defector(Strategy):
-    """Always defect - the pure exploiter"""
+    """Always defects. Pure self-interest."""
+    name = "Defector"
     
-    @property
-    def name(self) -> str:
-        return "Defector"
-    
-    def decide(self, history: Optional[InteractionHistory]) -> Action:
+    def decide(self, opponent: str, state: StrategyState) -> Action:
         return Action.DEFECT
 
 
 class TitForTat(Strategy):
-    """Mirror opponent's last move - cooperate first, then reciprocate
-    
-    The legendary strategy that won Axelrod's tournament.
-    Nice (cooperates first), retaliatory (punishes defection),
-    forgiving (returns to cooperation), and clear (easy to understand).
     """
+    Starts cooperating, then mirrors opponent's last move.
+    The most successful IPD strategy - nice, retaliatory, forgiving.
+    """
+    name = "TitForTat"
     
-    @property
-    def name(self) -> str:
-        return "TitForTat"
-    
-    def decide(self, history: Optional[InteractionHistory]) -> Action:
-        if history is None or not history.opponent_actions:
-            # First interaction - be nice
-            return Action.COOPERATE
-        # Mirror opponent's last move
-        return history.last_opponent_action()
+    def decide(self, opponent: str, state: StrategyState) -> Action:
+        last = state.last_action(opponent)
+        if last is None:
+            return Action.COOPERATE  # Start nice
+        return last  # Mirror their last move
 
 
 class Grudger(Strategy):
-    """Cooperate until betrayed, then always defect
-    
-    Also known as "Grim Trigger" - unforgiving but simple.
     """
+    Cooperates until betrayed, then always defects against that opponent.
+    Unforgiving but never initiates defection.
+    """
+    name = "Grudger"
     
-    @property
-    def name(self) -> str:
-        return "Grudger"
-    
-    def decide(self, history: Optional[InteractionHistory]) -> Action:
-        if history is None:
-            return Action.COOPERATE
-        if history.opponent_ever_defected():
-            return Action.DEFECT
+    def decide(self, opponent: str, state: StrategyState) -> Action:
+        if state.was_betrayed_by(opponent):
+            return Action.DEFECT  # Never forgive
         return Action.COOPERATE
 
 
-class RandomStrategy(Strategy):
-    """50/50 random choice - the baseline"""
+class Random(Strategy):
+    """50/50 random choice. Unpredictable chaos agent."""
+    name = "Random"
     
-    @property
-    def name(self) -> str:
-        return "Random"
-    
-    def decide(self, history: Optional[InteractionHistory]) -> Action:
+    def decide(self, opponent: str, state: StrategyState) -> Action:
         return random.choice([Action.COOPERATE, Action.DEFECT])
 
 
-class TitForTwoTats(Strategy):
-    """Only defect after opponent defects twice in a row
-    
-    More forgiving than TitForTat - handles noise better.
-    """
-    
-    @property
-    def name(self) -> str:
-        return "TitForTwoTats"
-    
-    def decide(self, history: Optional[InteractionHistory]) -> Action:
-        if history is None or len(history.opponent_actions) < 2:
-            return Action.COOPERATE
-        # Only defect if opponent defected last two times
-        if (history.opponent_actions[-1] == Action.DEFECT and 
-            history.opponent_actions[-2] == Action.DEFECT):
-            return Action.DEFECT
-        return Action.COOPERATE
-
-
 class Pavlov(Strategy):
-    """Win-stay, lose-shift
-    
-    Repeat last action if it led to a good outcome (CC or DC),
-    switch if it led to a bad outcome (CD or DD).
     """
+    Win-stay, lose-shift. If last outcome was good (both cooperate or 
+    I defected and they cooperated), repeat. Otherwise switch.
+    """
+    name = "Pavlov"
+    last_my_action: Dict[str, Action] = {}
     
-    @property
-    def name(self) -> str:
-        return "Pavlov"
-    
-    def decide(self, history: Optional[InteractionHistory]) -> Action:
-        if history is None or not history.my_actions:
-            return Action.COOPERATE
+    def decide(self, opponent: str, state: StrategyState) -> Action:
+        last_their = state.last_action(opponent)
+        last_mine = self.last_my_action.get(opponent)
         
-        my_last = history.my_actions[-1]
-        their_last = history.last_opponent_action()
+        if last_their is None or last_mine is None:
+            return Action.COOPERATE  # Start nice
         
-        # Good outcome = both same action
-        if my_last == their_last:
-            return my_last  # Win-stay
+        # If I cooperated and they cooperated, or I defected and they cooperated -> good, stay
+        # If I cooperated and they defected, or I defected and they defected -> bad, switch
+        if last_their == Action.COOPERATE:
+            return last_mine  # Stay with what worked
         else:
-            # Lose-shift
-            return Action.DEFECT if my_last == Action.COOPERATE else Action.COOPERATE
+            # Switch
+            return Action.DEFECT if last_mine == Action.COOPERATE else Action.COOPERATE
+
+
+class SuspiciousTitForTat(Strategy):
+    """Like TitForTat but starts with defection. Tests waters first."""
+    name = "SuspiciousTitForTat"
+    
+    def decide(self, opponent: str, state: StrategyState) -> Action:
+        last = state.last_action(opponent)
+        if last is None:
+            return Action.DEFECT  # Start suspicious
+        return last
 
 
 # Strategy registry
 STRATEGIES = {
-    "Cooperator": Cooperator,
-    "Defector": Defector,
-    "TitForTat": TitForTat,
-    "Grudger": Grudger,
-    "Random": RandomStrategy,
-    "TitForTwoTats": TitForTwoTats,
-    "Pavlov": Pavlov,
+    "Cooperator": Cooperator(),
+    "Defector": Defector(),
+    "TitForTat": TitForTat(),
+    "Grudger": Grudger(),
+    "Random": Random(),
+    "Pavlov": Pavlov(),
+    "SuspiciousTitForTat": SuspiciousTitForTat(),
 }
 
 
 def get_strategy(name: str) -> Strategy:
-    """Get strategy instance by name"""
-    if name not in STRATEGIES:
-        raise ValueError(f"Unknown strategy: {name}")
-    return STRATEGIES[name]()
+    return STRATEGIES.get(name, Cooperator())
 
 
-# Payoff matrix constants
-PAYOFF_MATRIX = {
-    (Action.COOPERATE, Action.COOPERATE): (3, 3),   # Mutual cooperation
-    (Action.COOPERATE, Action.DEFECT): (0, 5),      # Sucker's payoff
-    (Action.DEFECT, Action.COOPERATE): (5, 0),      # Temptation
-    (Action.DEFECT, Action.DEFECT): (1, 1),         # Mutual defection
-}
-
-
-def calculate_payoff(action_a: Action, action_b: Action) -> tuple[int, int]:
-    """Calculate payoff for both players"""
-    return PAYOFF_MATRIX[(action_a, action_b)]
+# Payoff matrix for Prisoner's Dilemma
+def calculate_payoff(action_a: Action, action_b: Action, stake: int = 100) -> tuple:
+    """
+    Returns (reward_a, reward_b) based on actions.
+    
+    Both Cooperate: (150, 150) - mutual benefit
+    Both Defect: (50, 50) - mutual harm
+    A Defects, B Cooperates: (200, 0) - A exploits B
+    A Cooperates, B Defects: (0, 200) - B exploits A
+    """
+    if action_a == Action.COOPERATE and action_b == Action.COOPERATE:
+        return (stake * 3 // 2, stake * 3 // 2)
+    elif action_a == Action.DEFECT and action_b == Action.DEFECT:
+        return (stake // 2, stake // 2)
+    elif action_a == Action.DEFECT and action_b == Action.COOPERATE:
+        return (stake * 2, 0)
+    else:  # A cooperates, B defects
+        return (0, stake * 2)
