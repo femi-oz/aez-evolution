@@ -54,13 +54,15 @@ jobs:
           
       - name: Update dependencies
         run: |
-          # Regenerate Cargo.lock with compatible versions
+          # Generate fresh Cargo.lock then pin problematic deps
           rm -f Cargo.lock
-          cargo update
-          # Pin packages that require edition2024 to older versions
-          # (edition2024 isn't supported in Cargo 1.79.0 used by Solana BPF)
+          cargo generate-lockfile
+          # Pin deps that require newer rustc (BPF uses 1.75.0-dev)
+          cargo update indexmap --precise 2.6.0 || true
+          cargo update hashbrown --precise 0.14.5 || true  
           cargo update constant_time_eq@0.4.2 --precise 0.3.1 || true
           cargo update blake3 --precise 1.5.4 || true
+          cargo update borsh --precise 1.5.1 || true
           
       - name: Build Program
         run: |
