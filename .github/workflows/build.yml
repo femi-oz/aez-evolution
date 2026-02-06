@@ -7,9 +7,9 @@ on:
     branches: [main, master]
 
 env:
-  # Using Solana 2.0+ which has newer rustc in platform-tools
-  SOLANA_VERSION: 2.0.21
-  ANCHOR_VERSION: 0.31.0
+  SOLANA_VERSION: 1.18.26
+  # Use older Anchor for better compatibility with Solana 1.18's platform-tools
+  ANCHOR_VERSION: 0.30.1
   RUST_VERSION: 1.79.0
 
 jobs:
