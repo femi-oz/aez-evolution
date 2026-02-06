@@ -7,7 +7,8 @@ on:
     branches: [main, master]
 
 env:
-  SOLANA_VERSION: 1.18.26
+  # Using Solana 2.0+ which has newer rustc in platform-tools
+  SOLANA_VERSION: 2.0.21
   ANCHOR_VERSION: 0.31.0
   RUST_VERSION: 1.79.0
 
@@ -54,15 +55,9 @@ jobs:
           
       - name: Update dependencies
         run: |
-          # Generate fresh Cargo.lock then pin problematic deps
+          # Generate fresh Cargo.lock
           rm -f Cargo.lock
           cargo generate-lockfile
-          # Pin deps that require newer rustc (BPF uses 1.75.0-dev)
-          cargo update indexmap --precise 2.6.0 || true
-          cargo update hashbrown --precise 0.14.5 || true  
-          cargo update constant_time_eq@0.4.2 --precise 0.3.1 || true
-          cargo update blake3 --precise 1.5.4 || true
-          cargo update borsh --precise 1.5.1 || true
           
       - name: Build Program
         run: |
