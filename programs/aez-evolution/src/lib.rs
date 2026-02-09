@@ -8,6 +8,14 @@ declare_id!("GYYRqgHqsYQuYfZNCsQRKCxpJdy9gRS5A6aAK9fDCY7g");
 pub mod aez_evolution {
     use super::*;
 
+    /// Initialize the global commitment counter
+    pub fn initialize_counter(ctx: Context<InitializeCounter>) -> Result<()> {
+        let counter = &mut ctx.accounts.commitment_counter;
+        counter.count = 0;
+        counter.bump = ctx.bumps.commitment_counter;
+        Ok(())
+    }
+
     /// Create a new genome (immortal strategy template)
     pub fn create_genome(
         ctx: Context<CreateGenome>,
@@ -123,14 +131,16 @@ pub mod aez_evolution {
         compute_stake: u64,
     ) -> Result<()> {
         let commitment = &mut ctx.accounts.commitment;
+        let counter = &mut ctx.accounts.commitment_counter;
         let agent_a = &mut ctx.accounts.agent_a;
         let agent_b = &mut ctx.accounts.agent_b;
-        
+
         require!(agent_a.alive, AEZError::AgentAlreadyDead);
         require!(agent_b.alive, AEZError::AgentAlreadyDead);
         require!(agent_a.compute_balance >= compute_stake, AEZError::InsufficientCompute);
         require!(agent_b.compute_balance >= compute_stake, AEZError::InsufficientCompute);
-        
+        require!(compute_stake >= 10_000, AEZError::StakeTooSmall);
+
         commitment.agent_a = agent_a.key();
         commitment.agent_b = agent_b.key();
         commitment.compute_stake = compute_stake;
@@ -141,10 +151,17 @@ pub mod aez_evolution {
         commitment.resolved = false;
         commitment.created_at = Clock::get()?.unix_timestamp;
         commitment.bump = ctx.bumps.commitment;
-        
-        // Lock stakes
-        agent_a.compute_balance -= compute_stake;
-        agent_b.compute_balance -= compute_stake;
+
+        // Increment counter for next commitment (prevents PDA collision)
+        counter.count = counter.count.checked_add(1).ok_or(AEZError::CounterOverflow)?;
+
+        // Lock stakes with checked math (prevents overflow/underflow)
+        agent_a.compute_balance = agent_a.compute_balance
+            .checked_sub(compute_stake)
+            .ok_or(AEZError::InsufficientCompute)?;
+        agent_b.compute_balance = agent_b.compute_balance
+            .checked_sub(compute_stake)
+            .ok_or(AEZError::InsufficientCompute)?;
         
         emit!(CommitmentCreated {
             commitment: commitment.key(),
@@ -163,17 +180,38 @@ pub mod aez_evolution {
         is_agent_a: bool,
     ) -> Result<()> {
         let commitment = &mut ctx.accounts.commitment;
-        
+
         require!(!commitment.resolved, AEZError::CommitmentAlreadyResolved);
-        
+
+        // Security: Verify authority matches agent
         if is_agent_a {
             require!(commitment.commit_hash_a.is_none(), AEZError::AlreadyCommitted);
+            require_keys_eq!(
+                ctx.accounts.authority.key(),
+                ctx.accounts.agent.authority,
+                AEZError::Unauthorized
+            );
+            require_keys_eq!(
+                ctx.accounts.agent.key(),
+                commitment.agent_a,
+                AEZError::WrongAgent
+            );
             commitment.commit_hash_a = Some(commit_hash);
         } else {
             require!(commitment.commit_hash_b.is_none(), AEZError::AlreadyCommitted);
+            require_keys_eq!(
+                ctx.accounts.authority.key(),
+                ctx.accounts.agent.authority,
+                AEZError::Unauthorized
+            );
+            require_keys_eq!(
+                ctx.accounts.agent.key(),
+                commitment.agent_b,
+                AEZError::WrongAgent
+            );
             commitment.commit_hash_b = Some(commit_hash);
         }
-        
+
         Ok(())
     }
 
@@ -185,19 +223,30 @@ pub mod aez_evolution {
         is_agent_a: bool,
     ) -> Result<()> {
         let commitment = &mut ctx.accounts.commitment;
-        
+
         require!(!commitment.resolved, AEZError::CommitmentAlreadyResolved);
-        
+
         // Verify the hash matches
         let mut data = vec![];
         data.extend_from_slice(&[action as u8]);
         data.extend_from_slice(&nonce);
         let computed_hash = anchor_lang::solana_program::hash::hash(&data);
-        
+
+        // Security: Verify authority matches agent
         if is_agent_a {
             require!(
                 commitment.commit_hash_a.is_some(),
                 AEZError::NotCommitted
+            );
+            require_keys_eq!(
+                ctx.accounts.authority.key(),
+                ctx.accounts.agent.authority,
+                AEZError::Unauthorized
+            );
+            require_keys_eq!(
+                ctx.accounts.agent.key(),
+                commitment.agent_a,
+                AEZError::WrongAgent
             );
             require!(
                 commitment.commit_hash_a.unwrap() == computed_hash.to_bytes(),
@@ -209,13 +258,23 @@ pub mod aez_evolution {
                 commitment.commit_hash_b.is_some(),
                 AEZError::NotCommitted
             );
+            require_keys_eq!(
+                ctx.accounts.authority.key(),
+                ctx.accounts.agent.authority,
+                AEZError::Unauthorized
+            );
+            require_keys_eq!(
+                ctx.accounts.agent.key(),
+                commitment.agent_b,
+                AEZError::WrongAgent
+            );
             require!(
                 commitment.commit_hash_b.unwrap() == computed_hash.to_bytes(),
                 AEZError::HashMismatch
             );
             commitment.action_b = Some(action);
         }
-        
+
         Ok(())
     }
 
@@ -259,12 +318,20 @@ pub mod aez_evolution {
             }
         };
         
-        // Update agent balances and stats
-        agent_a.compute_balance += reward_a;
-        agent_b.compute_balance += reward_b;
-        
-        agent_a.interactions += 1;
-        agent_b.interactions += 1;
+        // Update agent balances and stats (with checked math)
+        agent_a.compute_balance = agent_a.compute_balance
+            .checked_add(reward_a)
+            .ok_or(AEZError::ComputeOverflow)?;
+        agent_b.compute_balance = agent_b.compute_balance
+            .checked_add(reward_b)
+            .ok_or(AEZError::ComputeOverflow)?;
+
+        agent_a.interactions = agent_a.interactions
+            .checked_add(1)
+            .ok_or(AEZError::CounterOverflow)?;
+        agent_b.interactions = agent_b.interactions
+            .checked_add(1)
+            .ok_or(AEZError::CounterOverflow)?;
         
         match action_a {
             Action::Cooperate => agent_a.cooperations += 1,
@@ -291,6 +358,107 @@ pub mod aez_evolution {
             reward_b,
         });
         
+        Ok(())
+    }
+
+    /// Create or update trust edge after commitment resolution
+    pub fn update_trust_edge(
+        ctx: Context<UpdateTrustEdge>,
+        both_cooperated: bool,
+        betrayed: bool,
+        stake: u64,
+    ) -> Result<()> {
+        let edge = &mut ctx.accounts.trust_edge;
+        let clock = Clock::get()?;
+
+        // Initialize if first time
+        if edge.interaction_count == 0 {
+            edge.from = ctx.accounts.from_agent.key();
+            edge.to = ctx.accounts.to_agent.key();
+            edge.trust_score = 0.5; // Start neutral
+            edge.total_stake_committed = 0;
+            edge.interaction_count = 0;
+            edge.bump = ctx.bumps.trust_edge;
+        }
+
+        // Update trust score based on outcome
+        if both_cooperated {
+            edge.trust_score = (edge.trust_score + 0.1).min(1.0);
+        } else if betrayed {
+            edge.trust_score = (edge.trust_score - 0.2).max(0.0);
+        }
+
+        // Accumulate stake (Sybil resistance)
+        edge.total_stake_committed = edge.total_stake_committed
+            .checked_add(stake)
+            .ok_or(AEZError::StakeOverflow)?;
+
+        edge.interaction_count = edge.interaction_count
+            .checked_add(1)
+            .ok_or(AEZError::CounterOverflow)?;
+
+        edge.last_updated = clock.unix_timestamp;
+
+        emit!(TrustEdgeUpdated {
+            from: edge.from,
+            to: edge.to,
+            trust_score: edge.trust_score,
+            total_stake: edge.total_stake_committed,
+        });
+
+        Ok(())
+    }
+
+    /// Discover agent via trust path (transitive trust)
+    pub fn discover_via_path(
+        ctx: Context<DiscoverViaPath>,
+        path_keys: Vec<Pubkey>,
+    ) -> Result<()> {
+        require!(path_keys.len() >= 2, AEZError::PathTooShort);
+        require!(path_keys.len() <= 5, AEZError::PathTooLong);
+
+        // Verify no cycles
+        let mut seen = std::collections::HashSet::new();
+        for key in &path_keys {
+            require!(!seen.contains(key), AEZError::CircularPath);
+            seen.insert(*key);
+        }
+
+        // Calculate transitive trust (multiply along path)
+        let mut trust = 1.0_f32;
+        let path_edges = &ctx.remaining_accounts;
+
+        require!(
+            path_edges.len() == path_keys.len() - 1,
+            AEZError::InvalidPathLength
+        );
+
+        for edge_account_info in path_edges {
+            let edge: Account<TrustEdge> = Account::try_from(edge_account_info)?;
+            trust *= edge.trust_score;
+        }
+
+        // Apply length penalty (exponential decay)
+        let length_penalty = 0.9_f32.powi((path_keys.len() - 1) as i32);
+        trust *= length_penalty;
+
+        // Create new trust edge with computed trust
+        let new_edge = &mut ctx.accounts.new_trust_edge;
+        new_edge.from = path_keys[0];
+        new_edge.to = *path_keys.last().unwrap();
+        new_edge.trust_score = trust;
+        new_edge.total_stake_committed = 0;
+        new_edge.interaction_count = 0;
+        new_edge.last_updated = Clock::get()?.unix_timestamp;
+        new_edge.bump = ctx.bumps.new_trust_edge;
+
+        emit!(TrustPathDiscovered {
+            from: new_edge.from,
+            to: new_edge.to,
+            path_length: path_keys.len() as u8,
+            trust_score: trust,
+        });
+
         Ok(())
     }
 }
@@ -340,6 +508,25 @@ pub struct Commitment {
     pub commit_hash_b: Option<[u8; 32]>,
     pub resolved: bool,
     pub created_at: i64,
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct CommitmentCounter {
+    pub count: u64,
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct TrustEdge {
+    pub from: Pubkey,
+    pub to: Pubkey,
+    pub trust_score: f32,           // [0.0, 1.0]
+    pub total_stake_committed: u64, // Accumulated stakes (Sybil resistance)
+    pub interaction_count: u32,     // Number of interactions
+    pub last_updated: i64,          // Last update timestamp
     pub bump: u8,
 }
 
@@ -419,11 +606,34 @@ pub struct CreateCommitment<'info> {
             b"commitment",
             agent_a.key().as_ref(),
             agent_b.key().as_ref(),
-            &Clock::get()?.unix_timestamp.to_le_bytes()
+            &commitment_counter.count.to_le_bytes()
         ],
         bump
     )]
     pub commitment: Account<'info, Commitment>,
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + CommitmentCounter::INIT_SPACE,
+        seeds = [b"commitment_counter"],
+        bump
+    )]
+    pub commitment_counter: Account<'info, CommitmentCounter>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeCounter<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + CommitmentCounter::INIT_SPACE,
+        seeds = [b"commitment_counter"],
+        bump
+    )]
+    pub commitment_counter: Account<'info, CommitmentCounter>,
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -433,6 +643,7 @@ pub struct CreateCommitment<'info> {
 pub struct SubmitAction<'info> {
     #[account(mut)]
     pub commitment: Account<'info, Commitment>,
+    pub agent: Account<'info, Agent>,
     pub authority: Signer<'info>,
 }
 
@@ -440,6 +651,7 @@ pub struct SubmitAction<'info> {
 pub struct RevealAction<'info> {
     #[account(mut)]
     pub commitment: Account<'info, Commitment>,
+    pub agent: Account<'info, Agent>,
     pub authority: Signer<'info>,
 }
 
@@ -452,6 +664,50 @@ pub struct ResolveCommitment<'info> {
     #[account(mut, constraint = agent_b.key() == commitment.agent_b)]
     pub agent_b: Account<'info, Agent>,
     pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateTrustEdge<'info> {
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + TrustEdge::INIT_SPACE,
+        seeds = [
+            b"trust_edge",
+            from_agent.key().as_ref(),
+            to_agent.key().as_ref()
+        ],
+        bump
+    )]
+    pub trust_edge: Account<'info, TrustEdge>,
+    pub from_agent: Account<'info, Agent>,
+    pub to_agent: Account<'info, Agent>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct DiscoverViaPath<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + TrustEdge::INIT_SPACE,
+        seeds = [
+            b"trust_edge",
+            // Will be filled with path endpoints
+            path_start.key().as_ref(),
+            path_end.key().as_ref()
+        ],
+        bump
+    )]
+    pub new_trust_edge: Account<'info, TrustEdge>,
+    pub path_start: Account<'info, Agent>,
+    pub path_end: Account<'info, Agent>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+    // remaining_accounts = path of TrustEdge accounts
 }
 
 // ============ TYPES ============
@@ -489,6 +745,26 @@ pub enum AEZError {
     HashMismatch,
     #[msg("Action not yet revealed")]
     ActionNotRevealed,
+    #[msg("Unauthorized: authority does not match agent")]
+    Unauthorized,
+    #[msg("Wrong agent for this commitment position")]
+    WrongAgent,
+    #[msg("Compute balance overflow")]
+    ComputeOverflow,
+    #[msg("Counter overflow")]
+    CounterOverflow,
+    #[msg("Stake amount too small")]
+    StakeTooSmall,
+    #[msg("Path too short (minimum 2 nodes)")]
+    PathTooShort,
+    #[msg("Path too long (maximum 5 hops)")]
+    PathTooLong,
+    #[msg("Circular path detected")]
+    CircularPath,
+    #[msg("Invalid path length")]
+    InvalidPathLength,
+    #[msg("Stake overflow")]
+    StakeOverflow,
 }
 
 // ============ EVENTS ============
@@ -540,4 +816,20 @@ pub struct CommitmentResolved {
     pub action_b: Action,
     pub reward_a: u64,
     pub reward_b: u64,
+}
+
+#[event]
+pub struct TrustEdgeUpdated {
+    pub from: Pubkey,
+    pub to: Pubkey,
+    pub trust_score: f32,
+    pub total_stake: u64,
+}
+
+#[event]
+pub struct TrustPathDiscovered {
+    pub from: Pubkey,
+    pub to: Pubkey,
+    pub path_length: u8,
+    pub trust_score: f32,
 }
