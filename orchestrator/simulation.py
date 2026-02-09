@@ -236,12 +236,17 @@ class Simulation:
 def create_default_simulation() -> Simulation:
     """Create simulation with default agent mix"""
     sim = Simulation(stake=100)
-    
-    # Create 10 agents of each strategy (50 total)
+
+    # Create agents of each strategy (50 total: 10 of first 5, then 5 each of the remaining 2)
     for strategy_name in ["Cooperator", "Defector", "TitForTat", "Grudger", "Random"]:
         for _ in range(10):
             sim.create_agent(strategy_name, initial_compute=1000)
-    
+
+    # Add the additional strategies with fewer agents to keep total at ~50
+    for strategy_name in ["Pavlov", "SuspiciousTitForTat"]:
+        for _ in range(5):
+            sim.create_agent(strategy_name, initial_compute=1000)
+
     return sim
 
 

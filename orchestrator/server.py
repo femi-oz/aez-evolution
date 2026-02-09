@@ -104,15 +104,15 @@ async def get_status():
 async def create_simulation(request: CreateSimRequest = CreateSimRequest()):
     """Create a new simulation"""
     global simulation
-    
+
     simulation = Simulation(stake=request.stake)
-    
-    # Create agents for each strategy
-    strategies = ["Cooperator", "Defector", "TitForTat", "Grudger", "Random"]
+
+    # Create agents for each strategy - all 7 strategies
+    strategies = ["Cooperator", "Defector", "TitForTat", "Grudger", "Random", "Pavlov", "SuspiciousTitForTat"]
     for strategy_name in strategies:
         for _ in range(request.agents_per_strategy):
             simulation.create_agent(strategy_name, initial_compute=request.initial_compute)
-    
+
     return {
         "status": "created",
         "total_agents": len(simulation.agents),
@@ -245,11 +245,11 @@ async def get_agent(agent_id: str):
     """Get agent details"""
     if simulation is None:
         raise HTTPException(status_code=404, detail="No simulation running")
-    
+
     agent = simulation.agents.get(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    
+
     return AgentResponse(
         id=agent.id,
         strategy=agent.strategy_name,
@@ -260,6 +260,57 @@ async def get_agent(agent_id: str):
         defections=agent.defections,
         alive=agent.alive
     )
+
+
+@app.get("/network/trust")
+async def get_trust_network():
+    """Get trust network data for visualization"""
+    if simulation is None:
+        raise HTTPException(status_code=404, detail="No simulation running")
+
+    # Build nodes
+    nodes = []
+    for agent in simulation.agents.values():
+        coop_rate = agent.cooperations / agent.interactions if agent.interactions > 0 else 0.5
+        nodes.append({
+            "id": agent.id,
+            "strategy": agent.strategy_name,
+            "fitness": agent.fitness_score,
+            "compute": agent.compute_balance,
+            "alive": agent.alive,
+            "interactions": agent.interactions,
+            "cooperations": agent.cooperations,
+            "defections": agent.defections,
+            "cooperation_rate": coop_rate
+        })
+
+    # Build edges based on interaction history
+    edges = []
+    for agent in simulation.agents.values():
+        for opponent_id, actions in agent.state.opponent_actions.items():
+            if opponent_id not in simulation.agents:
+                continue
+
+            # Only add edge once per pair (use lexicographic ordering)
+            if agent.id < opponent_id:
+                # Calculate trust score based on cooperation
+                cooperations = sum(1 for a in actions if a.name == "COOPERATE")
+                total = len(actions)
+                trust_score = cooperations / total if total > 0 else 0.5
+
+                edges.append({
+                    "source": agent.id,
+                    "target": opponent_id,
+                    "trust": trust_score,
+                    "interactions": total,
+                    "cooperations": cooperations
+                })
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "round": simulation.round_number
+    }
 
 
 def main():

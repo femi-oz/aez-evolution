@@ -98,26 +98,29 @@ class Random(Strategy):
 
 class Pavlov(Strategy):
     """
-    Win-stay, lose-shift. If last outcome was good (both cooperate or 
+    Win-stay, lose-shift. If last outcome was good (both cooperate or
     I defected and they cooperated), repeat. Otherwise switch.
     """
     name = "Pavlov"
-    last_my_action: Dict[str, Action] = {}
-    
+
+    def __init__(self):
+        self.last_my_action: Dict[str, Action] = {}
+
     def decide(self, opponent: str, state: StrategyState) -> Action:
         last_their = state.last_action(opponent)
         last_mine = self.last_my_action.get(opponent)
-        
+
         if last_their is None or last_mine is None:
-            return Action.COOPERATE  # Start nice
-        
-        # If I cooperated and they cooperated, or I defected and they cooperated -> good, stay
-        # If I cooperated and they defected, or I defected and they defected -> bad, switch
-        if last_their == Action.COOPERATE:
-            return last_mine  # Stay with what worked
+            action = Action.COOPERATE  # Start nice
+        elif last_their == Action.COOPERATE:
+            action = last_mine  # Stay with what worked
         else:
             # Switch
-            return Action.DEFECT if last_mine == Action.COOPERATE else Action.COOPERATE
+            action = Action.DEFECT if last_mine == Action.COOPERATE else Action.COOPERATE
+
+        # Record my action for next time
+        self.last_my_action[opponent] = action
+        return action
 
 
 class SuspiciousTitForTat(Strategy):
