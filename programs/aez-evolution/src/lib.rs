@@ -361,7 +361,30 @@ pub mod aez_evolution {
         Ok(())
     }
 
-    /// Create or update trust edge after commitment resolution
+    /// Create a new trust edge between two agents
+    pub fn create_trust_edge(ctx: Context<CreateTrustEdge>) -> Result<()> {
+        let edge = &mut ctx.accounts.trust_edge;
+        let clock = Clock::get()?;
+
+        edge.from = ctx.accounts.from_agent.key();
+        edge.to = ctx.accounts.to_agent.key();
+        edge.trust_score = 0.5; // Start neutral
+        edge.total_stake_committed = 0;
+        edge.interaction_count = 0;
+        edge.last_updated = clock.unix_timestamp;
+        edge.bump = ctx.bumps.trust_edge;
+
+        emit!(TrustEdgeUpdated {
+            from: edge.from,
+            to: edge.to,
+            trust_score: edge.trust_score,
+            total_stake: edge.total_stake_committed,
+        });
+
+        Ok(())
+    }
+
+    /// Update trust edge after commitment resolution
     pub fn update_trust_edge(
         ctx: Context<UpdateTrustEdge>,
         both_cooperated: bool,
@@ -370,16 +393,6 @@ pub mod aez_evolution {
     ) -> Result<()> {
         let edge = &mut ctx.accounts.trust_edge;
         let clock = Clock::get()?;
-
-        // Initialize if first time
-        if edge.interaction_count == 0 {
-            edge.from = ctx.accounts.from_agent.key();
-            edge.to = ctx.accounts.to_agent.key();
-            edge.trust_score = 0.5; // Start neutral
-            edge.total_stake_committed = 0;
-            edge.interaction_count = 0;
-            edge.bump = ctx.bumps.trust_edge;
-        }
 
         // Update trust score based on outcome
         if both_cooperated {
@@ -410,8 +423,8 @@ pub mod aez_evolution {
     }
 
     /// Discover agent via trust path (transitive trust)
-    pub fn discover_via_path(
-        ctx: Context<DiscoverViaPath>,
+    pub fn discover_via_path<'info>(
+        ctx: Context<'_, '_, 'info, 'info, DiscoverViaPath<'info>>,
         path_keys: Vec<Pubkey>,
     ) -> Result<()> {
         require!(path_keys.len() >= 2, AEZError::PathTooShort);
@@ -426,14 +439,14 @@ pub mod aez_evolution {
 
         // Calculate transitive trust (multiply along path)
         let mut trust = 1.0_f32;
-        let path_edges = &ctx.remaining_accounts;
+        let path_edges = ctx.remaining_accounts;
 
         require!(
             path_edges.len() == path_keys.len() - 1,
             AEZError::InvalidPathLength
         );
 
-        for edge_account_info in path_edges {
+        for edge_account_info in path_edges.iter() {
             let edge: Account<TrustEdge> = Account::try_from(edge_account_info)?;
             trust *= edge.trust_score;
         }
@@ -599,6 +612,12 @@ pub struct CreateCommitment<'info> {
     #[account(mut)]
     pub agent_b: Account<'info, Agent>,
     #[account(
+        mut,
+        seeds = [b"commitment_counter"],
+        bump = commitment_counter.bump
+    )]
+    pub commitment_counter: Account<'info, CommitmentCounter>,
+    #[account(
         init,
         payer = authority,
         space = 8 + Commitment::INIT_SPACE,
@@ -611,14 +630,6 @@ pub struct CreateCommitment<'info> {
         bump
     )]
     pub commitment: Account<'info, Commitment>,
-    #[account(
-        init_if_needed,
-        payer = authority,
-        space = 8 + CommitmentCounter::INIT_SPACE,
-        seeds = [b"commitment_counter"],
-        bump
-    )]
-    pub commitment_counter: Account<'info, CommitmentCounter>,
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -667,9 +678,9 @@ pub struct ResolveCommitment<'info> {
 }
 
 #[derive(Accounts)]
-pub struct UpdateTrustEdge<'info> {
+pub struct CreateTrustEdge<'info> {
     #[account(
-        init_if_needed,
+        init,
         payer = authority,
         space = 8 + TrustEdge::INIT_SPACE,
         seeds = [
@@ -685,6 +696,23 @@ pub struct UpdateTrustEdge<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateTrustEdge<'info> {
+    #[account(
+        mut,
+        seeds = [
+            b"trust_edge",
+            from_agent.key().as_ref(),
+            to_agent.key().as_ref()
+        ],
+        bump = trust_edge.bump
+    )]
+    pub trust_edge: Account<'info, TrustEdge>,
+    pub from_agent: Account<'info, Agent>,
+    pub to_agent: Account<'info, Agent>,
+    pub authority: Signer<'info>,
 }
 
 #[derive(Accounts)]
