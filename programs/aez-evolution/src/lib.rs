@@ -589,6 +589,107 @@ pub mod aez_evolution {
 
         Ok(())
     }
+
+    /// Initialize adaptive strategy for an agent
+    pub fn init_adaptive_strategy(
+        ctx: Context<InitAdaptiveStrategy>,
+        initial_weights: Vec<i16>,
+        learning_rate: u16,
+        cooldown: i64,
+    ) -> Result<()> {
+        let strategy = &mut ctx.accounts.adaptive_strategy;
+        let agent = &ctx.accounts.agent;
+        let clock = Clock::get()?;
+
+        require!(initial_weights.len() <= 20, AEZError::TooManyWeights);
+        require!(cooldown >= 60, AEZError::CooldownTooShort); // Minimum 60 seconds
+
+        strategy.agent = agent.key();
+        strategy.weights = initial_weights;
+        strategy.learning_rate = learning_rate;
+        strategy.baseline_fitness = agent.fitness_score;
+        strategy.update_count = 0;
+        strategy.last_update = clock.unix_timestamp;
+        strategy.cooldown = cooldown;
+        strategy.bump = ctx.bumps.adaptive_strategy;
+
+        strategy.validate_learning_rate()?;
+        strategy.validate_weights()?;
+
+        emit!(AdaptiveStrategyCreated {
+            agent: agent.key(),
+            strategy: strategy.key(),
+            initial_weights: strategy.weights.len() as u8,
+        });
+
+        Ok(())
+    }
+
+    /// Update strategy weights based on performance
+    pub fn update_strategy(
+        ctx: Context<UpdateStrategy>,
+        new_weights: Vec<i16>,
+    ) -> Result<()> {
+        let strategy = &mut ctx.accounts.adaptive_strategy;
+        let agent = &ctx.accounts.agent;
+        let clock = Clock::get()?;
+
+        // Security checks
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            agent.authority,
+            AEZError::Unauthorized
+        );
+
+        // Cooldown check
+        require!(
+            clock.unix_timestamp - strategy.last_update >= strategy.cooldown,
+            AEZError::UpdateCooldownActive
+        );
+
+        // Fitness improvement check
+        require!(
+            agent.fitness_score > strategy.baseline_fitness,
+            AEZError::FitnessDidNotImprove
+        );
+
+        // Validate new weights
+        require!(
+            new_weights.len() == strategy.weights.len(),
+            AEZError::WeightCountMismatch
+        );
+
+        for &weight in &new_weights {
+            require!(
+                weight >= -10000 && weight <= 10000,
+                AEZError::WeightOutOfBounds
+            );
+        }
+
+        // Apply update with learning rate (gradient descent)
+        let lr = strategy.learning_rate as f32 / 10000.0;
+        for i in 0..strategy.weights.len() {
+            let old_weight = strategy.weights[i] as f32;
+            let new_weight = new_weights[i] as f32;
+            let updated = old_weight * (1.0 - lr) + new_weight * lr;
+            strategy.weights[i] = updated.clamp(-10000.0, 10000.0) as i16;
+        }
+
+        strategy.update_count = strategy.update_count
+            .checked_add(1)
+            .ok_or(AEZError::CounterOverflow)?;
+        strategy.last_update = clock.unix_timestamp;
+        strategy.baseline_fitness = agent.fitness_score;
+
+        emit!(StrategyUpdated {
+            agent: agent.key(),
+            strategy: strategy.key(),
+            generation: strategy.update_count,
+            new_fitness: agent.fitness_score,
+        });
+
+        Ok(())
+    }
 }
 
 // ============ ACCOUNTS ============
@@ -673,6 +774,43 @@ pub struct MultiPartyCommitment {
     pub resolved: bool,                 // Fully resolved
     pub created_at: i64,
     pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct AdaptiveStrategy {
+    pub agent: Pubkey,                  // Associated agent
+    #[max_len(20)]
+    pub weights: Vec<i16>,              // Neural weights (scaled to i16)
+    pub learning_rate: u16,             // Learning rate * 10000 (0.0001 to 1.0)
+    pub baseline_fitness: i64,          // Fitness at last update
+    pub update_count: u32,              // Number of updates
+    pub last_update: i64,               // Last update timestamp
+    pub cooldown: i64,                  // Minimum time between updates (seconds)
+    pub bump: u8,
+}
+
+impl AdaptiveStrategy {
+    pub fn validate_learning_rate(&self) -> Result<()> {
+        const MIN_LR: u16 = 10;       // 0.001 * 10000
+        const MAX_LR: u16 = 1000;     // 0.1 * 10000
+        require!(
+            self.learning_rate >= MIN_LR && self.learning_rate <= MAX_LR,
+            AEZError::InvalidLearningRate
+        );
+        Ok(())
+    }
+
+    pub fn validate_weights(&self) -> Result<()> {
+        require!(self.weights.len() <= 20, AEZError::TooManyWeights);
+        for &weight in &self.weights {
+            require!(
+                weight >= -10000 && weight <= 10000,
+                AEZError::WeightOutOfBounds
+            );
+        }
+        Ok(())
+    }
 }
 
 // ============ CONTEXTS ============
@@ -905,6 +1043,40 @@ pub struct ResolveMultiParty<'info> {
     pub authority: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct InitAdaptiveStrategy<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + AdaptiveStrategy::INIT_SPACE,
+        seeds = [
+            b"adaptive_strategy",
+            agent.key().as_ref()
+        ],
+        bump
+    )]
+    pub adaptive_strategy: Account<'info, AdaptiveStrategy>,
+    pub agent: Account<'info, Agent>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateStrategy<'info> {
+    #[account(
+        mut,
+        seeds = [
+            b"adaptive_strategy",
+            agent.key().as_ref()
+        ],
+        bump = adaptive_strategy.bump
+    )]
+    pub adaptive_strategy: Account<'info, AdaptiveStrategy>,
+    pub agent: Account<'info, Agent>,
+    pub authority: Signer<'info>,
+}
+
 // ============ TYPES ============
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
@@ -1004,6 +1176,20 @@ pub enum AEZError {
     NotAllCompleted,
     #[msg("Composition failed")]
     CompositionFailed,
+    #[msg("Invalid learning rate (must be 0.001 to 0.1)")]
+    InvalidLearningRate,
+    #[msg("Too many weights (maximum 20)")]
+    TooManyWeights,
+    #[msg("Weight out of bounds (must be -10000 to 10000)")]
+    WeightOutOfBounds,
+    #[msg("Weight count mismatch")]
+    WeightCountMismatch,
+    #[msg("Fitness did not improve since last update")]
+    FitnessDidNotImprove,
+    #[msg("Update cooldown still active")]
+    UpdateCooldownActive,
+    #[msg("Cooldown too short (minimum 60 seconds)")]
+    CooldownTooShort,
 }
 
 // ============ EVENTS ============
@@ -1091,4 +1277,19 @@ pub struct CompositionSucceeded {
 pub struct CompositionFailed {
     pub composition: Pubkey,
     pub participants: Vec<Pubkey>,
+}
+
+#[event]
+pub struct AdaptiveStrategyCreated {
+    pub agent: Pubkey,
+    pub strategy: Pubkey,
+    pub initial_weights: u8,
+}
+
+#[event]
+pub struct StrategyUpdated {
+    pub agent: Pubkey,
+    pub strategy: Pubkey,
+    pub generation: u32,
+    pub new_fitness: i64,
 }
