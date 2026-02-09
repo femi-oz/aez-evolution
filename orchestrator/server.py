@@ -268,49 +268,8 @@ async def get_trust_network():
     if simulation is None:
         raise HTTPException(status_code=404, detail="No simulation running")
 
-    # Build nodes
-    nodes = []
-    for agent in simulation.agents.values():
-        coop_rate = agent.cooperations / agent.interactions if agent.interactions > 0 else 0.5
-        nodes.append({
-            "id": agent.id,
-            "strategy": agent.strategy_name,
-            "fitness": agent.fitness_score,
-            "compute": agent.compute_balance,
-            "alive": agent.alive,
-            "interactions": agent.interactions,
-            "cooperations": agent.cooperations,
-            "defections": agent.defections,
-            "cooperation_rate": coop_rate
-        })
-
-    # Build edges based on interaction history
-    edges = []
-    for agent in simulation.agents.values():
-        for opponent_id, actions in agent.state.opponent_actions.items():
-            if opponent_id not in simulation.agents:
-                continue
-
-            # Only add edge once per pair (use lexicographic ordering)
-            if agent.id < opponent_id:
-                # Calculate trust score based on cooperation
-                cooperations = sum(1 for a in actions if a.name == "COOPERATE")
-                total = len(actions)
-                trust_score = cooperations / total if total > 0 else 0.5
-
-                edges.append({
-                    "source": agent.id,
-                    "target": opponent_id,
-                    "trust": trust_score,
-                    "interactions": total,
-                    "cooperations": cooperations
-                })
-
-    return {
-        "nodes": nodes,
-        "edges": edges,
-        "round": simulation.round_number
-    }
+    # Use the simulation's built-in trust network tracking
+    return simulation.get_trust_network()
 
 
 def main():

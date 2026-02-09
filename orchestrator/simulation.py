@@ -72,11 +72,32 @@ class SimEvent:
     data: Dict
 
 
+@dataclass
+class TrustEdge:
+    """Trust edge between two agents"""
+    from_agent: str
+    to_agent: str
+    trust_score: float = 0.5  # Start neutral [0.0, 1.0]
+    total_stake_committed: int = 0
+    interaction_count: int = 0
+
+    def update(self, both_cooperated: bool, betrayed: bool, stake: int):
+        """Update trust based on outcome"""
+        if both_cooperated:
+            self.trust_score = min(1.0, self.trust_score + 0.1)
+        elif betrayed:
+            self.trust_score = max(0.0, self.trust_score - 0.2)
+
+        self.total_stake_committed += stake
+        self.interaction_count += 1
+
+
 class Simulation:
     """Local simulation engine"""
     
     def __init__(self, stake: int = 100):
         self.agents: Dict[str, SimAgent] = {}
+        self.trust_edges: Dict[Tuple[str, str], TrustEdge] = {}  # (from, to) -> edge
         self.round_number: int = 0
         self.stake: int = stake
         self.events: List[SimEvent] = []
@@ -136,9 +157,13 @@ class Simulation:
         # Record opponent actions for strategy state
         agent_a.record_opponent_action(agent_b.id, action_b)
         agent_b.record_opponent_action(agent_a.id, action_a)
-        
+
+        # Update trust edges (bidirectional)
+        self._update_trust(agent_a.id, agent_b.id, action_a, action_b)
+        self._update_trust(agent_b.id, agent_a.id, action_b, action_a)
+
         commitment.resolved = True
-        
+
         self._log("commitment_resolved", {
             "agent_a": agent_a.id,
             "agent_b": agent_b.id,
@@ -147,8 +172,25 @@ class Simulation:
             "reward_a": reward_a,
             "reward_b": reward_b,
         })
-        
+
         return commitment
+
+    def _update_trust(self, from_id: str, to_id: str, my_action: Action, their_action: Action):
+        """Update trust edge after interaction"""
+        edge_key = (from_id, to_id)
+
+        # Create edge if doesn't exist
+        if edge_key not in self.trust_edges:
+            self.trust_edges[edge_key] = TrustEdge(from_id, to_id)
+
+        edge = self.trust_edges[edge_key]
+
+        # Determine outcome
+        both_cooperated = (my_action == Action.COOPERATE and their_action == Action.COOPERATE)
+        betrayed = (my_action == Action.COOPERATE and their_action == Action.DEFECT)
+
+        # Update edge
+        edge.update(both_cooperated, betrayed, self.stake)
     
     def run_round(self) -> List[SimCommitment]:
         """Run one round - each agent plays against each other agent once"""
@@ -227,9 +269,44 @@ class Simulation:
             "running": self.running,
             "events_count": len(self.events),
             "strategies": [
-                {"name": k, "count": v} 
+                {"name": k, "count": v}
                 for k, v in sorted(self.get_strategy_distribution().items())
             ]
+        }
+
+    def get_trust_network(self) -> Dict:
+        """Get trust network data for visualization"""
+        nodes = []
+        for agent in self.agents.values():
+            coop_rate = agent.cooperations / agent.interactions if agent.interactions > 0 else 0.5
+            nodes.append({
+                "id": agent.id,
+                "strategy": agent.strategy_name,
+                "fitness": agent.fitness_score,
+                "compute": agent.compute_balance,
+                "alive": agent.alive,
+                "interactions": agent.interactions,
+                "cooperations": agent.cooperations,
+                "defections": agent.defections,
+                "cooperation_rate": coop_rate
+            })
+
+        edges = []
+        for (from_id, to_id), edge in self.trust_edges.items():
+            # Only include edges with actual interactions
+            if edge.interaction_count > 0:
+                edges.append({
+                    "source": from_id,
+                    "target": to_id,
+                    "trust": edge.trust_score,
+                    "interactions": edge.interaction_count,
+                    "total_stake": edge.total_stake_committed
+                })
+
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "round": self.round_number
         }
 
 
