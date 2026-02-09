@@ -474,6 +474,121 @@ pub mod aez_evolution {
 
         Ok(())
     }
+
+    /// Create multi-party commitment (composite task)
+    pub fn create_composition(
+        ctx: Context<CreateComposition>,
+        requirements: Vec<Capability>,
+        stake_per_agent: u64,
+    ) -> Result<()> {
+        let composition = &mut ctx.accounts.composition;
+        let clock = Clock::get()?;
+
+        // Validate all capabilities
+        for cap in &requirements {
+            cap.validate()?;
+        }
+
+        require!(requirements.len() >= 2, AEZError::NotEnoughParticipants);
+        require!(requirements.len() <= 10, AEZError::TooManyParticipants);
+
+        // Collect participants from remaining_accounts
+        let participants: Vec<Pubkey> = ctx.remaining_accounts
+            .iter()
+            .map(|acc| acc.key())
+            .collect();
+
+        require!(
+            participants.len() == requirements.len(),
+            AEZError::ParticipantMismatch
+        );
+
+        // Initialize composition
+        composition.participants = participants;
+        composition.requirements = requirements;
+        composition.contributions = vec![];
+        composition.escrow_amount = stake_per_agent
+            .checked_mul(composition.participants.len() as u64)
+            .ok_or(AEZError::ComputeOverflow)?;
+        composition.completed_count = 0;
+        composition.failed = false;
+        composition.resolved = false;
+        composition.created_at = clock.unix_timestamp;
+        composition.bump = ctx.bumps.composition;
+
+        emit!(CompositionCreated {
+            composition: composition.key(),
+            participants: composition.participants.len() as u8,
+            total_stake: composition.escrow_amount,
+        });
+
+        Ok(())
+    }
+
+    /// Submit contribution to multi-party commitment
+    pub fn submit_contribution(
+        ctx: Context<SubmitContribution>,
+        capability: Capability,
+        participant_index: u8,
+    ) -> Result<()> {
+        let composition = &mut ctx.accounts.composition;
+        let agent = &ctx.accounts.agent;
+
+        require!(!composition.resolved, AEZError::CommitmentAlreadyResolved);
+        require!(!composition.failed, AEZError::CompositionFailed);
+
+        // Verify agent is participant
+        require!(
+            composition.participants[participant_index as usize] == agent.key(),
+            AEZError::WrongAgent
+        );
+
+        // Validate capability
+        capability.validate()?;
+
+        // Add contribution
+        composition.contributions.push(capability);
+        composition.completed_count = composition.completed_count
+            .checked_add(1)
+            .ok_or(AEZError::CounterOverflow)?;
+
+        Ok(())
+    }
+
+    /// Resolve multi-party commitment
+    pub fn resolve_multiparty(ctx: Context<ResolveMultiParty>) -> Result<()> {
+        let composition = &mut ctx.accounts.composition;
+
+        require!(!composition.resolved, AEZError::CommitmentAlreadyResolved);
+
+        // Check all participants completed
+        require!(
+            composition.completed_count == composition.participants.len() as u8,
+            AEZError::NotAllCompleted
+        );
+
+        if composition.failed {
+            // If any failed, slash reputation (handled off-chain for now)
+            emit!(CompositionFailed {
+                composition: composition.key(),
+                participants: composition.participants.clone(),
+            });
+        } else {
+            // Success! Distribute rewards
+            let reward_per_agent = composition.escrow_amount / composition.participants.len() as u64;
+
+            // Update trust between all participants (full mesh)
+            emit!(CompositionSucceeded {
+                composition: composition.key(),
+                participants: composition.participants.clone(),
+                reward_per_agent,
+            });
+        }
+
+        composition.resolved = true;
+
+        Ok(())
+    }
 }
 
 // ============ ACCOUNTS ============
@@ -540,6 +655,23 @@ pub struct TrustEdge {
     pub total_stake_committed: u64, // Accumulated stakes (Sybil resistance)
     pub interaction_count: u32,     // Number of interactions
     pub last_updated: i64,          // Last update timestamp
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct MultiPartyCommitment {
+    #[max_len(10)]
+    pub participants: Vec<Pubkey>,      // Max 10 agents
+    #[max_len(10)]
+    pub requirements: Vec<Capability>,  // What's needed
+    #[max_len(10)]
+    pub contributions: Vec<Capability>, // What each provides
+    pub escrow_amount: u64,             // Total escrowed compute
+    pub completed_count: u8,            // How many finished
+    pub failed: bool,                   // Any defection = true
+    pub resolved: bool,                 // Fully resolved
+    pub created_at: i64,
     pub bump: u8,
 }
 
@@ -738,6 +870,41 @@ pub struct DiscoverViaPath<'info> {
     // remaining_accounts = path of TrustEdge accounts
 }
 
+#[derive(Accounts)]
+pub struct CreateComposition<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + MultiPartyCommitment::INIT_SPACE,
+        seeds = [
+            b"composition",
+            authority.key().as_ref(),
+            &Clock::get()?.unix_timestamp.to_le_bytes()
+        ],
+        bump
+    )]
+    pub composition: Account<'info, MultiPartyCommitment>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+    // remaining_accounts = Agent accounts for participants
+}
+
+#[derive(Accounts)]
+pub struct SubmitContribution<'info> {
+    #[account(mut)]
+    pub composition: Account<'info, MultiPartyCommitment>,
+    pub agent: Account<'info, Agent>,
+    pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ResolveMultiParty<'info> {
+    #[account(mut)]
+    pub composition: Account<'info, MultiPartyCommitment>,
+    pub authority: Signer<'info>,
+}
+
 // ============ TYPES ============
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
@@ -753,6 +920,38 @@ pub enum Strategy {
 pub enum Action {
     Cooperate,
     Defect,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace)]
+pub enum Capability {
+    Compute { cycles: u64 },           // Provide compute power
+    Data { quality: u8 },              // Provide data (quality 0-100)
+    Validation { accuracy: u8 },       // Validate results (accuracy 0-100)
+    Storage { capacity: u64 },         // Store data
+    Routing { bandwidth: u64 },        // Route information
+}
+
+impl Capability {
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Capability::Compute { cycles } => {
+                require!(*cycles > 0 && *cycles <= 1_000_000_000, AEZError::InvalidCapability);
+            }
+            Capability::Data { quality } => {
+                require!(*quality <= 100, AEZError::InvalidCapability);
+            }
+            Capability::Validation { accuracy } => {
+                require!(*accuracy <= 100, AEZError::InvalidCapability);
+            }
+            Capability::Storage { capacity } => {
+                require!(*capacity > 0 && *capacity <= 1_000_000_000, AEZError::InvalidCapability);
+            }
+            Capability::Routing { bandwidth } => {
+                require!(*bandwidth > 0 && *bandwidth <= 1_000_000_000, AEZError::InvalidCapability);
+            }
+        }
+        Ok(())
+    }
 }
 
 // ============ ERRORS ============
@@ -793,6 +992,18 @@ pub enum AEZError {
     InvalidPathLength,
     #[msg("Stake overflow")]
     StakeOverflow,
+    #[msg("Invalid capability parameters")]
+    InvalidCapability,
+    #[msg("Not enough participants (minimum 2)")]
+    NotEnoughParticipants,
+    #[msg("Too many participants (maximum 10)")]
+    TooManyParticipants,
+    #[msg("Participant count mismatch")]
+    ParticipantMismatch,
+    #[msg("Not all participants completed")]
+    NotAllCompleted,
+    #[msg("Composition failed")]
+    CompositionFailed,
 }
 
 // ============ EVENTS ============
@@ -860,4 +1071,24 @@ pub struct TrustPathDiscovered {
     pub to: Pubkey,
     pub path_length: u8,
     pub trust_score: f32,
+}
+
+#[event]
+pub struct CompositionCreated {
+    pub composition: Pubkey,
+    pub participants: u8,
+    pub total_stake: u64,
+}
+
+#[event]
+pub struct CompositionSucceeded {
+    pub composition: Pubkey,
+    pub participants: Vec<Pubkey>,
+    pub reward_per_agent: u64,
+}
+
+#[event]
+pub struct CompositionFailed {
+    pub composition: Pubkey,
+    pub participants: Vec<Pubkey>,
 }
