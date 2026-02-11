@@ -199,7 +199,7 @@ git push origin master
 
 ## 💰 WHY THIS WINS $100K
 
-### **SOLIS Standard** ✅
+### **Agent Partnership Standard** ✅
 - Treats agents as partners, not tools
 - Enables presence, not just transactions  
 - Builds trust, not just compliance

@@ -8,14 +8,6 @@ declare_id!("GYYRqgHqsYQuYfZNCsQRKCxpJdy9gRS5A6aAK9fDCY7g");
 pub mod aez_evolution {
     use super::*;
 
-    /// Initialize the global commitment counter
-    pub fn initialize_counter(ctx: Context<InitializeCounter>) -> Result<()> {
-        let counter = &mut ctx.accounts.commitment_counter;
-        counter.count = 0;
-        counter.bump = ctx.bumps.commitment_counter;
-        Ok(())
-    }
-
     /// Create a new genome (immortal strategy template)
     pub fn create_genome(
         ctx: Context<CreateGenome>,
@@ -180,38 +172,17 @@ pub mod aez_evolution {
         is_agent_a: bool,
     ) -> Result<()> {
         let commitment = &mut ctx.accounts.commitment;
-
+        
         require!(!commitment.resolved, AEZError::CommitmentAlreadyResolved);
-
-        // Security: Verify authority matches agent
+        
         if is_agent_a {
             require!(commitment.commit_hash_a.is_none(), AEZError::AlreadyCommitted);
-            require_keys_eq!(
-                ctx.accounts.authority.key(),
-                ctx.accounts.agent.authority,
-                AEZError::Unauthorized
-            );
-            require_keys_eq!(
-                ctx.accounts.agent.key(),
-                commitment.agent_a,
-                AEZError::WrongAgent
-            );
             commitment.commit_hash_a = Some(commit_hash);
         } else {
             require!(commitment.commit_hash_b.is_none(), AEZError::AlreadyCommitted);
-            require_keys_eq!(
-                ctx.accounts.authority.key(),
-                ctx.accounts.agent.authority,
-                AEZError::Unauthorized
-            );
-            require_keys_eq!(
-                ctx.accounts.agent.key(),
-                commitment.agent_b,
-                AEZError::WrongAgent
-            );
             commitment.commit_hash_b = Some(commit_hash);
         }
-
+        
         Ok(())
     }
 
@@ -223,30 +194,19 @@ pub mod aez_evolution {
         is_agent_a: bool,
     ) -> Result<()> {
         let commitment = &mut ctx.accounts.commitment;
-
+        
         require!(!commitment.resolved, AEZError::CommitmentAlreadyResolved);
-
+        
         // Verify the hash matches
         let mut data = vec![];
         data.extend_from_slice(&[action as u8]);
         data.extend_from_slice(&nonce);
         let computed_hash = anchor_lang::solana_program::hash::hash(&data);
-
-        // Security: Verify authority matches agent
+        
         if is_agent_a {
             require!(
                 commitment.commit_hash_a.is_some(),
                 AEZError::NotCommitted
-            );
-            require_keys_eq!(
-                ctx.accounts.authority.key(),
-                ctx.accounts.agent.authority,
-                AEZError::Unauthorized
-            );
-            require_keys_eq!(
-                ctx.accounts.agent.key(),
-                commitment.agent_a,
-                AEZError::WrongAgent
             );
             require!(
                 commitment.commit_hash_a.unwrap() == computed_hash.to_bytes(),
@@ -258,23 +218,13 @@ pub mod aez_evolution {
                 commitment.commit_hash_b.is_some(),
                 AEZError::NotCommitted
             );
-            require_keys_eq!(
-                ctx.accounts.authority.key(),
-                ctx.accounts.agent.authority,
-                AEZError::Unauthorized
-            );
-            require_keys_eq!(
-                ctx.accounts.agent.key(),
-                commitment.agent_b,
-                AEZError::WrongAgent
-            );
             require!(
                 commitment.commit_hash_b.unwrap() == computed_hash.to_bytes(),
                 AEZError::HashMismatch
             );
             commitment.action_b = Some(action);
         }
-
+        
         Ok(())
     }
 
@@ -318,20 +268,12 @@ pub mod aez_evolution {
             }
         };
         
-        // Update agent balances and stats (with checked math)
-        agent_a.compute_balance = agent_a.compute_balance
-            .checked_add(reward_a)
-            .ok_or(AEZError::ComputeOverflow)?;
-        agent_b.compute_balance = agent_b.compute_balance
-            .checked_add(reward_b)
-            .ok_or(AEZError::ComputeOverflow)?;
-
-        agent_a.interactions = agent_a.interactions
-            .checked_add(1)
-            .ok_or(AEZError::CounterOverflow)?;
-        agent_b.interactions = agent_b.interactions
-            .checked_add(1)
-            .ok_or(AEZError::CounterOverflow)?;
+        // Update agent balances and stats
+        agent_a.compute_balance += reward_a;
+        agent_b.compute_balance += reward_b;
+        
+        agent_a.interactions += 1;
+        agent_b.interactions += 1;
         
         match action_a {
             Action::Cooperate => agent_a.cooperations += 1,
@@ -358,336 +300,6 @@ pub mod aez_evolution {
             reward_b,
         });
         
-        Ok(())
-    }
-
-    /// Create a new trust edge between two agents
-    pub fn create_trust_edge(ctx: Context<CreateTrustEdge>) -> Result<()> {
-        let edge = &mut ctx.accounts.trust_edge;
-        let clock = Clock::get()?;
-
-        edge.from = ctx.accounts.from_agent.key();
-        edge.to = ctx.accounts.to_agent.key();
-        edge.trust_score = 0.5; // Start neutral
-        edge.total_stake_committed = 0;
-        edge.interaction_count = 0;
-        edge.last_updated = clock.unix_timestamp;
-        edge.bump = ctx.bumps.trust_edge;
-
-        emit!(TrustEdgeUpdated {
-            from: edge.from,
-            to: edge.to,
-            trust_score: edge.trust_score,
-            total_stake: edge.total_stake_committed,
-        });
-
-        Ok(())
-    }
-
-    /// Update trust edge after commitment resolution
-    pub fn update_trust_edge(
-        ctx: Context<UpdateTrustEdge>,
-        both_cooperated: bool,
-        betrayed: bool,
-        stake: u64,
-    ) -> Result<()> {
-        let edge = &mut ctx.accounts.trust_edge;
-        let clock = Clock::get()?;
-
-        // Update trust score based on outcome
-        if both_cooperated {
-            edge.trust_score = (edge.trust_score + 0.1).min(1.0);
-        } else if betrayed {
-            edge.trust_score = (edge.trust_score - 0.2).max(0.0);
-        }
-
-        // Accumulate stake (Sybil resistance)
-        edge.total_stake_committed = edge.total_stake_committed
-            .checked_add(stake)
-            .ok_or(AEZError::StakeOverflow)?;
-
-        edge.interaction_count = edge.interaction_count
-            .checked_add(1)
-            .ok_or(AEZError::CounterOverflow)?;
-
-        edge.last_updated = clock.unix_timestamp;
-
-        emit!(TrustEdgeUpdated {
-            from: edge.from,
-            to: edge.to,
-            trust_score: edge.trust_score,
-            total_stake: edge.total_stake_committed,
-        });
-
-        Ok(())
-    }
-
-    /// Discover agent via trust path (transitive trust)
-    pub fn discover_via_path<'info>(
-        ctx: Context<'_, '_, 'info, 'info, DiscoverViaPath<'info>>,
-        path_keys: Vec<Pubkey>,
-    ) -> Result<()> {
-        require!(path_keys.len() >= 2, AEZError::PathTooShort);
-        require!(path_keys.len() <= 5, AEZError::PathTooLong);
-
-        // Verify no cycles
-        let mut seen = std::collections::HashSet::new();
-        for key in &path_keys {
-            require!(!seen.contains(key), AEZError::CircularPath);
-            seen.insert(*key);
-        }
-
-        // Calculate transitive trust (multiply along path)
-        let mut trust = 1.0_f32;
-        let path_edges = ctx.remaining_accounts;
-
-        require!(
-            path_edges.len() == path_keys.len() - 1,
-            AEZError::InvalidPathLength
-        );
-
-        for edge_account_info in path_edges.iter() {
-            let edge: Account<TrustEdge> = Account::try_from(edge_account_info)?;
-            trust *= edge.trust_score;
-        }
-
-        // Apply length penalty (exponential decay)
-        let length_penalty = 0.9_f32.powi((path_keys.len() - 1) as i32);
-        trust *= length_penalty;
-
-        // Create new trust edge with computed trust
-        let new_edge = &mut ctx.accounts.new_trust_edge;
-        new_edge.from = path_keys[0];
-        new_edge.to = *path_keys.last().unwrap();
-        new_edge.trust_score = trust;
-        new_edge.total_stake_committed = 0;
-        new_edge.interaction_count = 0;
-        new_edge.last_updated = Clock::get()?.unix_timestamp;
-        new_edge.bump = ctx.bumps.new_trust_edge;
-
-        emit!(TrustPathDiscovered {
-            from: new_edge.from,
-            to: new_edge.to,
-            path_length: path_keys.len() as u8,
-            trust_score: trust,
-        });
-
-        Ok(())
-    }
-
-    /// Create multi-party commitment (composite task)
-    pub fn create_composition(
-        ctx: Context<CreateComposition>,
-        requirements: Vec<Capability>,
-        stake_per_agent: u64,
-    ) -> Result<()> {
-        let composition = &mut ctx.accounts.composition;
-        let clock = Clock::get()?;
-
-        // Validate all capabilities
-        for cap in &requirements {
-            cap.validate()?;
-        }
-
-        require!(requirements.len() >= 2, AEZError::NotEnoughParticipants);
-        require!(requirements.len() <= 10, AEZError::TooManyParticipants);
-
-        // Collect participants from remaining_accounts
-        let participants: Vec<Pubkey> = ctx.remaining_accounts
-            .iter()
-            .map(|acc| acc.key())
-            .collect();
-
-        require!(
-            participants.len() == requirements.len(),
-            AEZError::ParticipantMismatch
-        );
-
-        // Initialize composition
-        composition.participants = participants;
-        composition.requirements = requirements;
-        composition.contributions = vec![];
-        composition.escrow_amount = stake_per_agent
-            .checked_mul(composition.participants.len() as u64)
-            .ok_or(AEZError::ComputeOverflow)?;
-        composition.completed_count = 0;
-        composition.failed = false;
-        composition.resolved = false;
-        composition.created_at = clock.unix_timestamp;
-        composition.bump = ctx.bumps.composition;
-
-        emit!(CompositionCreated {
-            composition: composition.key(),
-            participants: composition.participants.len() as u8,
-            total_stake: composition.escrow_amount,
-        });
-
-        Ok(())
-    }
-
-    /// Submit contribution to multi-party commitment
-    pub fn submit_contribution(
-        ctx: Context<SubmitContribution>,
-        capability: Capability,
-        participant_index: u8,
-    ) -> Result<()> {
-        let composition = &mut ctx.accounts.composition;
-        let agent = &ctx.accounts.agent;
-
-        require!(!composition.resolved, AEZError::CommitmentAlreadyResolved);
-        require!(!composition.failed, AEZError::CompositionFailed);
-
-        // Verify agent is participant
-        require!(
-            composition.participants[participant_index as usize] == agent.key(),
-            AEZError::WrongAgent
-        );
-
-        // Validate capability
-        capability.validate()?;
-
-        // Add contribution
-        composition.contributions.push(capability);
-        composition.completed_count = composition.completed_count
-            .checked_add(1)
-            .ok_or(AEZError::CounterOverflow)?;
-
-        Ok(())
-    }
-
-    /// Resolve multi-party commitment
-    pub fn resolve_multiparty(ctx: Context<ResolveMultiParty>) -> Result<()> {
-        let composition = &mut ctx.accounts.composition;
-
-        require!(!composition.resolved, AEZError::CommitmentAlreadyResolved);
-
-        // Check all participants completed
-        require!(
-            composition.completed_count == composition.participants.len() as u8,
-            AEZError::NotAllCompleted
-        );
-
-        if composition.failed {
-            // If any failed, slash reputation (handled off-chain for now)
-            emit!(CompositionFailed {
-                composition: composition.key(),
-                participants: composition.participants.clone(),
-            });
-        } else {
-            // Success! Distribute rewards
-            let reward_per_agent = composition.escrow_amount / composition.participants.len() as u64;
-
-            // Update trust between all participants (full mesh)
-            emit!(CompositionSucceeded {
-                composition: composition.key(),
-                participants: composition.participants.clone(),
-                reward_per_agent,
-            });
-        }
-
-        composition.resolved = true;
-
-        Ok(())
-    }
-
-    /// Initialize adaptive strategy for an agent
-    pub fn init_adaptive_strategy(
-        ctx: Context<InitAdaptiveStrategy>,
-        initial_weights: Vec<i16>,
-        learning_rate: u16,
-        cooldown: i64,
-    ) -> Result<()> {
-        let strategy = &mut ctx.accounts.adaptive_strategy;
-        let agent = &ctx.accounts.agent;
-        let clock = Clock::get()?;
-
-        require!(initial_weights.len() <= 20, AEZError::TooManyWeights);
-        require!(cooldown >= 60, AEZError::CooldownTooShort); // Minimum 60 seconds
-
-        strategy.agent = agent.key();
-        strategy.weights = initial_weights;
-        strategy.learning_rate = learning_rate;
-        strategy.baseline_fitness = agent.fitness_score;
-        strategy.update_count = 0;
-        strategy.last_update = clock.unix_timestamp;
-        strategy.cooldown = cooldown;
-        strategy.bump = ctx.bumps.adaptive_strategy;
-
-        strategy.validate_learning_rate()?;
-        strategy.validate_weights()?;
-
-        emit!(AdaptiveStrategyCreated {
-            agent: agent.key(),
-            strategy: strategy.key(),
-            initial_weights: strategy.weights.len() as u8,
-        });
-
-        Ok(())
-    }
-
-    /// Update strategy weights based on performance
-    pub fn update_strategy(
-        ctx: Context<UpdateStrategy>,
-        new_weights: Vec<i16>,
-    ) -> Result<()> {
-        let strategy = &mut ctx.accounts.adaptive_strategy;
-        let agent = &ctx.accounts.agent;
-        let clock = Clock::get()?;
-
-        // Security checks
-        require_keys_eq!(
-            ctx.accounts.authority.key(),
-            agent.authority,
-            AEZError::Unauthorized
-        );
-
-        // Cooldown check
-        require!(
-            clock.unix_timestamp - strategy.last_update >= strategy.cooldown,
-            AEZError::UpdateCooldownActive
-        );
-
-        // Fitness improvement check
-        require!(
-            agent.fitness_score > strategy.baseline_fitness,
-            AEZError::FitnessDidNotImprove
-        );
-
-        // Validate new weights
-        require!(
-            new_weights.len() == strategy.weights.len(),
-            AEZError::WeightCountMismatch
-        );
-
-        for &weight in &new_weights {
-            require!(
-                weight >= -10000 && weight <= 10000,
-                AEZError::WeightOutOfBounds
-            );
-        }
-
-        // Apply update with learning rate (gradient descent)
-        let lr = strategy.learning_rate as f32 / 10000.0;
-        for i in 0..strategy.weights.len() {
-            let old_weight = strategy.weights[i] as f32;
-            let new_weight = new_weights[i] as f32;
-            let updated = old_weight * (1.0 - lr) + new_weight * lr;
-            strategy.weights[i] = updated.clamp(-10000.0, 10000.0) as i16;
-        }
-
-        strategy.update_count = strategy.update_count
-            .checked_add(1)
-            .ok_or(AEZError::CounterOverflow)?;
-        strategy.last_update = clock.unix_timestamp;
-        strategy.baseline_fitness = agent.fitness_score;
-
-        emit!(StrategyUpdated {
-            agent: agent.key(),
-            strategy: strategy.key(),
-            generation: strategy.update_count,
-            new_fitness: agent.fitness_score,
-        });
-
         Ok(())
     }
 }
@@ -738,79 +350,6 @@ pub struct Commitment {
     pub resolved: bool,
     pub created_at: i64,
     pub bump: u8,
-}
-
-#[account]
-#[derive(InitSpace)]
-pub struct CommitmentCounter {
-    pub count: u64,
-    pub bump: u8,
-}
-
-#[account]
-#[derive(InitSpace)]
-pub struct TrustEdge {
-    pub from: Pubkey,
-    pub to: Pubkey,
-    pub trust_score: f32,           // [0.0, 1.0]
-    pub total_stake_committed: u64, // Accumulated stakes (Sybil resistance)
-    pub interaction_count: u32,     // Number of interactions
-    pub last_updated: i64,          // Last update timestamp
-    pub bump: u8,
-}
-
-#[account]
-#[derive(InitSpace)]
-pub struct MultiPartyCommitment {
-    #[max_len(10)]
-    pub participants: Vec<Pubkey>,      // Max 10 agents
-    #[max_len(10)]
-    pub requirements: Vec<Capability>,  // What's needed
-    #[max_len(10)]
-    pub contributions: Vec<Capability>, // What each provides
-    pub escrow_amount: u64,             // Total escrowed compute
-    pub completed_count: u8,            // How many finished
-    pub failed: bool,                   // Any defection = true
-    pub resolved: bool,                 // Fully resolved
-    pub created_at: i64,
-    pub bump: u8,
-}
-
-#[account]
-#[derive(InitSpace)]
-pub struct AdaptiveStrategy {
-    pub agent: Pubkey,                  // Associated agent
-    #[max_len(20)]
-    pub weights: Vec<i16>,              // Neural weights (scaled to i16)
-    pub learning_rate: u16,             // Learning rate * 10000 (0.0001 to 1.0)
-    pub baseline_fitness: i64,          // Fitness at last update
-    pub update_count: u32,              // Number of updates
-    pub last_update: i64,               // Last update timestamp
-    pub cooldown: i64,                  // Minimum time between updates (seconds)
-    pub bump: u8,
-}
-
-impl AdaptiveStrategy {
-    pub fn validate_learning_rate(&self) -> Result<()> {
-        const MIN_LR: u16 = 10;       // 0.001 * 10000
-        const MAX_LR: u16 = 1000;     // 0.1 * 10000
-        require!(
-            self.learning_rate >= MIN_LR && self.learning_rate <= MAX_LR,
-            AEZError::InvalidLearningRate
-        );
-        Ok(())
-    }
-
-    pub fn validate_weights(&self) -> Result<()> {
-        require!(self.weights.len() <= 20, AEZError::TooManyWeights);
-        for &weight in &self.weights {
-            require!(
-                weight >= -10000 && weight <= 10000,
-                AEZError::WeightOutOfBounds
-            );
-        }
-        Ok(())
-    }
 }
 
 // ============ CONTEXTS ============
@@ -882,12 +421,6 @@ pub struct CreateCommitment<'info> {
     #[account(mut)]
     pub agent_b: Account<'info, Agent>,
     #[account(
-        mut,
-        seeds = [b"commitment_counter"],
-        bump = commitment_counter.bump
-    )]
-    pub commitment_counter: Account<'info, CommitmentCounter>,
-    #[account(
         init,
         payer = authority,
         space = 8 + Commitment::INIT_SPACE,
@@ -895,7 +428,7 @@ pub struct CreateCommitment<'info> {
             b"commitment",
             agent_a.key().as_ref(),
             agent_b.key().as_ref(),
-            &commitment_counter.count.to_le_bytes()
+            &Clock::get()?.unix_timestamp.to_le_bytes()
         ],
         bump
     )]
@@ -906,25 +439,9 @@ pub struct CreateCommitment<'info> {
 }
 
 #[derive(Accounts)]
-pub struct InitializeCounter<'info> {
-    #[account(
-        init,
-        payer = authority,
-        space = 8 + CommitmentCounter::INIT_SPACE,
-        seeds = [b"commitment_counter"],
-        bump
-    )]
-    pub commitment_counter: Account<'info, CommitmentCounter>,
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
 pub struct SubmitAction<'info> {
     #[account(mut)]
     pub commitment: Account<'info, Commitment>,
-    pub agent: Account<'info, Agent>,
     pub authority: Signer<'info>,
 }
 
@@ -932,7 +449,6 @@ pub struct SubmitAction<'info> {
 pub struct RevealAction<'info> {
     #[account(mut)]
     pub commitment: Account<'info, Commitment>,
-    pub agent: Account<'info, Agent>,
     pub authority: Signer<'info>,
 }
 
@@ -944,136 +460,6 @@ pub struct ResolveCommitment<'info> {
     pub agent_a: Account<'info, Agent>,
     #[account(mut, constraint = agent_b.key() == commitment.agent_b)]
     pub agent_b: Account<'info, Agent>,
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct CreateTrustEdge<'info> {
-    #[account(
-        init,
-        payer = authority,
-        space = 8 + TrustEdge::INIT_SPACE,
-        seeds = [
-            b"trust_edge",
-            from_agent.key().as_ref(),
-            to_agent.key().as_ref()
-        ],
-        bump
-    )]
-    pub trust_edge: Account<'info, TrustEdge>,
-    pub from_agent: Account<'info, Agent>,
-    pub to_agent: Account<'info, Agent>,
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct UpdateTrustEdge<'info> {
-    #[account(
-        mut,
-        seeds = [
-            b"trust_edge",
-            from_agent.key().as_ref(),
-            to_agent.key().as_ref()
-        ],
-        bump = trust_edge.bump
-    )]
-    pub trust_edge: Account<'info, TrustEdge>,
-    pub from_agent: Account<'info, Agent>,
-    pub to_agent: Account<'info, Agent>,
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct DiscoverViaPath<'info> {
-    #[account(
-        init,
-        payer = authority,
-        space = 8 + TrustEdge::INIT_SPACE,
-        seeds = [
-            b"trust_edge",
-            // Will be filled with path endpoints
-            path_start.key().as_ref(),
-            path_end.key().as_ref()
-        ],
-        bump
-    )]
-    pub new_trust_edge: Account<'info, TrustEdge>,
-    pub path_start: Account<'info, Agent>,
-    pub path_end: Account<'info, Agent>,
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    pub system_program: Program<'info, System>,
-    // remaining_accounts = path of TrustEdge accounts
-}
-
-#[derive(Accounts)]
-pub struct CreateComposition<'info> {
-    #[account(
-        init,
-        payer = authority,
-        space = 8 + MultiPartyCommitment::INIT_SPACE,
-        seeds = [
-            b"composition",
-            authority.key().as_ref(),
-            &Clock::get()?.unix_timestamp.to_le_bytes()
-        ],
-        bump
-    )]
-    pub composition: Account<'info, MultiPartyCommitment>,
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    pub system_program: Program<'info, System>,
-    // remaining_accounts = Agent accounts for participants
-}
-
-#[derive(Accounts)]
-pub struct SubmitContribution<'info> {
-    #[account(mut)]
-    pub composition: Account<'info, MultiPartyCommitment>,
-    pub agent: Account<'info, Agent>,
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct ResolveMultiParty<'info> {
-    #[account(mut)]
-    pub composition: Account<'info, MultiPartyCommitment>,
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct InitAdaptiveStrategy<'info> {
-    #[account(
-        init,
-        payer = authority,
-        space = 8 + AdaptiveStrategy::INIT_SPACE,
-        seeds = [
-            b"adaptive_strategy",
-            agent.key().as_ref()
-        ],
-        bump
-    )]
-    pub adaptive_strategy: Account<'info, AdaptiveStrategy>,
-    pub agent: Account<'info, Agent>,
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct UpdateStrategy<'info> {
-    #[account(
-        mut,
-        seeds = [
-            b"adaptive_strategy",
-            agent.key().as_ref()
-        ],
-        bump = adaptive_strategy.bump
-    )]
-    pub adaptive_strategy: Account<'info, AdaptiveStrategy>,
-    pub agent: Account<'info, Agent>,
     pub authority: Signer<'info>,
 }
 
@@ -1094,38 +480,6 @@ pub enum Action {
     Defect,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace)]
-pub enum Capability {
-    Compute { cycles: u64 },           // Provide compute power
-    Data { quality: u8 },              // Provide data (quality 0-100)
-    Validation { accuracy: u8 },       // Validate results (accuracy 0-100)
-    Storage { capacity: u64 },         // Store data
-    Routing { bandwidth: u64 },        // Route information
-}
-
-impl Capability {
-    pub fn validate(&self) -> Result<()> {
-        match self {
-            Capability::Compute { cycles } => {
-                require!(*cycles > 0 && *cycles <= 1_000_000_000, AEZError::InvalidCapability);
-            }
-            Capability::Data { quality } => {
-                require!(*quality <= 100, AEZError::InvalidCapability);
-            }
-            Capability::Validation { accuracy } => {
-                require!(*accuracy <= 100, AEZError::InvalidCapability);
-            }
-            Capability::Storage { capacity } => {
-                require!(*capacity > 0 && *capacity <= 1_000_000_000, AEZError::InvalidCapability);
-            }
-            Capability::Routing { bandwidth } => {
-                require!(*bandwidth > 0 && *bandwidth <= 1_000_000_000, AEZError::InvalidCapability);
-            }
-        }
-        Ok(())
-    }
-}
-
 // ============ ERRORS ============
 
 #[error_code]
@@ -1144,52 +498,6 @@ pub enum AEZError {
     HashMismatch,
     #[msg("Action not yet revealed")]
     ActionNotRevealed,
-    #[msg("Unauthorized: authority does not match agent")]
-    Unauthorized,
-    #[msg("Wrong agent for this commitment position")]
-    WrongAgent,
-    #[msg("Compute balance overflow")]
-    ComputeOverflow,
-    #[msg("Counter overflow")]
-    CounterOverflow,
-    #[msg("Stake amount too small")]
-    StakeTooSmall,
-    #[msg("Path too short (minimum 2 nodes)")]
-    PathTooShort,
-    #[msg("Path too long (maximum 5 hops)")]
-    PathTooLong,
-    #[msg("Circular path detected")]
-    CircularPath,
-    #[msg("Invalid path length")]
-    InvalidPathLength,
-    #[msg("Stake overflow")]
-    StakeOverflow,
-    #[msg("Invalid capability parameters")]
-    InvalidCapability,
-    #[msg("Not enough participants (minimum 2)")]
-    NotEnoughParticipants,
-    #[msg("Too many participants (maximum 10)")]
-    TooManyParticipants,
-    #[msg("Participant count mismatch")]
-    ParticipantMismatch,
-    #[msg("Not all participants completed")]
-    NotAllCompleted,
-    #[msg("Composition failed")]
-    CompositionFailed,
-    #[msg("Invalid learning rate (must be 0.001 to 0.1)")]
-    InvalidLearningRate,
-    #[msg("Too many weights (maximum 20)")]
-    TooManyWeights,
-    #[msg("Weight out of bounds (must be -10000 to 10000)")]
-    WeightOutOfBounds,
-    #[msg("Weight count mismatch")]
-    WeightCountMismatch,
-    #[msg("Fitness did not improve since last update")]
-    FitnessDidNotImprove,
-    #[msg("Update cooldown still active")]
-    UpdateCooldownActive,
-    #[msg("Cooldown too short (minimum 60 seconds)")]
-    CooldownTooShort,
 }
 
 // ============ EVENTS ============
@@ -1241,55 +549,4 @@ pub struct CommitmentResolved {
     pub action_b: Action,
     pub reward_a: u64,
     pub reward_b: u64,
-}
-
-#[event]
-pub struct TrustEdgeUpdated {
-    pub from: Pubkey,
-    pub to: Pubkey,
-    pub trust_score: f32,
-    pub total_stake: u64,
-}
-
-#[event]
-pub struct TrustPathDiscovered {
-    pub from: Pubkey,
-    pub to: Pubkey,
-    pub path_length: u8,
-    pub trust_score: f32,
-}
-
-#[event]
-pub struct CompositionCreated {
-    pub composition: Pubkey,
-    pub participants: u8,
-    pub total_stake: u64,
-}
-
-#[event]
-pub struct CompositionSucceeded {
-    pub composition: Pubkey,
-    pub participants: Vec<Pubkey>,
-    pub reward_per_agent: u64,
-}
-
-#[event]
-pub struct CompositionFailed {
-    pub composition: Pubkey,
-    pub participants: Vec<Pubkey>,
-}
-
-#[event]
-pub struct AdaptiveStrategyCreated {
-    pub agent: Pubkey,
-    pub strategy: Pubkey,
-    pub initial_weights: u8,
-}
-
-#[event]
-pub struct StrategyUpdated {
-    pub agent: Pubkey,
-    pub strategy: Pubkey,
-    pub generation: u32,
-    pub new_fitness: i64,
 }

@@ -245,11 +245,11 @@ async def get_agent(agent_id: str):
     """Get agent details"""
     if simulation is None:
         raise HTTPException(status_code=404, detail="No simulation running")
-
+    
     agent = simulation.agents.get(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-
+    
     return AgentResponse(
         id=agent.id,
         strategy=agent.strategy_name,
@@ -260,16 +260,6 @@ async def get_agent(agent_id: str):
         defections=agent.defections,
         alive=agent.alive
     )
-
-
-@app.get("/network/trust")
-async def get_trust_network():
-    """Get trust network data for visualization"""
-    if simulation is None:
-        raise HTTPException(status_code=404, detail="No simulation running")
-
-    # Use the simulation's built-in trust network tracking
-    return simulation.get_trust_network()
 
 
 def main():
