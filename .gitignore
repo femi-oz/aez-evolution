@@ -9,3 +9,7 @@ __pycache__/
 *.py[cod]
 *.so
 venv/
+
+# Patent documents (not for public submission)
+PATENT-APPLICATION.md
+PATENT-APPLICATION.pdf
